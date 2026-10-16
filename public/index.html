@@ -1,0 +1,74 @@
+<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Watch Party</title>
+<style>
+:root{--bg:#12121a;--c:#1e1e2b;--a:#ff6b4a;--t:#eee}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--t);font:14px system-ui}
+button,input,select{font:inherit;border-radius:8px;border:1px solid #444;background:#2a2a3a;color:var(--t);padding:6px 10px}button{cursor:pointer}button.p{background:var(--a);border:0}
+#lobby{max-width:360px;margin:15vh auto;display:grid;gap:10px}#app{display:none;grid-template-columns:2fr 1fr;gap:12px;padding:12px}
+.card{background:var(--c);border-radius:12px;padding:12px;margin-bottom:12px}video{width:100%;border-radius:8px;background:#000}
+#chat{height:180px;overflow:auto;margin-bottom:6px}.chip{margin:2px}.chip.on{background:var(--a)}.row{display:flex;gap:6px;align-items:center;margin:4px 0}.row span{flex:1}
+#fx{position:fixed;inset:0;pointer-events:none;overflow:hidden}.fl{position:absolute;bottom:0;font-size:34px;animation:up 2.5s forwards}@keyframes up{to{transform:translateY(-80vh);opacity:0}}
+small{opacity:.7}@media(max-width:800px){#app{grid-template-columns:1fr}}
+</style>
+<div id=lobby><h2>🎬 Watch Party</h2><input id=nm placeholder="Your name"><button class=p id=cr>Create room</button>
+<div class=row><input id=rc placeholder="Room code" style="flex:1"><button id=jn>Join</button></div><small id=err></small></div>
+<div id=app><div>
+ <div class=card><video id=v controls playsinline></video>
+  <div class=row><small id=st></small></div>
+  <div class=row><span id=rx></span><small>Room <b id=code></b> <button id=cp>Copy invite link</button></small></div></div>
+ <div class=card><b>Discover</b><div class=row><input id=q placeholder="Fuzzy search (try 'sntl')" style="flex:1">
+  <select id=mr><option value=0>Any rating</option><option value=6>6+</option><option value=7>7+</option></select></div>
+  <div id=cats></div><div id=list></div></div></div>
+<div><div class=card><b>Members</b><div id=mem></div></div>
+ <div class=card><b>Chat</b><div id=chat></div><div class=row><input id=ct style="flex:1" placeholder="Say something"><button id=cs>Send</button></div></div>
+ <div class=card><b>Playlist</b><div id=pl></div></div>
+ <div class=card><b>Poll</b><div id=poll></div><div class=row><input id=pq placeholder="Question"><input id=po placeholder="opt1, opt2"><button id=ps>Start</button></div></div></div></div>
+<div id=fx></div>
+<script>
+const $=s=>document.querySelector(s),v=$('#v'),pid=localStorage.pid||(localStorage.pid=crypto.randomUUID());
+let ws,S,movies=[],cat='All',joinMsg,ref={t:0,at:0,playing:false},mute=0,samples=[],loaded=null;
+const sup=()=>performance.now()<mute,send=o=>ws&&ws.readyState===1&&ws.send(JSON.stringify(o)),esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+$('#rc').value=new URLSearchParams(location.search).get('room')||'';
+fetch('/api/movies').then(r=>r.json()).then(m=>{movies=m;drawList()});
+function connect(){ws=new WebSocket((location.protocol=='https:'?'wss://':'ws://')+location.host);
+ ws.onopen=()=>send(joinMsg);ws.onclose=()=>{if(S)$('#st').textContent='Reconnecting…';setTimeout(connect,1000)};
+ ws.onmessage=e=>{const m=JSON.parse(e.data);({state:onState,chat:onChat,react:onReact,pong:onPong,error:m=>$('#err').textContent=m.msg}[m.type]||(()=>{}))(m)}}
+function go(create){const name=$('#nm').value.trim()||'Guest';joinMsg={type:'join',id:pid,name,create,room:$('#rc').value};if(!create&&!joinMsg.room)return;connect()}
+$('#cr').onclick=()=>go(true);$('#jn').onclick=()=>go(false);
+function onState(s){S=s;$('#lobby').style.display='none';$('#app').style.display='grid';$('#code').textContent=s.room;
+ history.replaceState(0,'','?room='+s.room);joinMsg={...joinMsg,create:false,room:s.room};
+ if(s.movie&&loaded!==s.movie.id){loaded=s.movie.id;v.src=s.movie.src}
+ const target=s.time+(s.playing?rtt()/2000:0);ref={t:target,at:performance.now(),playing:s.playing};
+ mute=performance.now()+600;if(Math.abs(v.currentTime-target)>.3)v.currentTime=target;
+ s.playing?v.play().catch(()=>{}):v.pause();render()}
+v.onplay=()=>!sup()&&send({type:'play',t:v.currentTime});v.onpause=()=>!sup()&&!v.ended&&send({type:'pause',t:v.currentTime});
+v.onseeked=()=>!sup()&&send({type:'seek',t:v.currentTime});v.onended=()=>S?.movie&&send({type:'ended',movieId:S.movie.id});
+setInterval(()=>{if(!S)return;let d=0;if(ref.playing&&!v.paused){const exp=ref.t+(performance.now()-ref.at)/1000;d=v.currentTime-exp;
+ if(Math.abs(d)>.5){mute=performance.now()+600;v.currentTime=exp;v.playbackRate=1}else v.playbackRate=Math.abs(d)>.08?(d>0?.95:1.05):1}
+ $('#st').textContent=`drift ${(d*1000)|0}ms · rtt p95 ${p95()}ms`},1000);
+setInterval(()=>send({type:'ping',ts:performance.now()}),2000);
+const onPong=m=>{samples.push(performance.now()-m.ts);if(samples.length>50)samples.shift()},rtt=()=>samples.at(-1)||0,
+ p95=()=>samples.length?[...samples].sort((a,b)=>a-b)[Math.floor(samples.length*.95)|0].toFixed(0):'–';
+function render(){const me=S.host===pid;
+ $('#mem').innerHTML=S.members.map(u=>`<div class=row><span>${u.online?'🟢':'⚪'} ${esc(u.name)} ${u.id==S.host?'👑':''}</span>${me&&u.id!=S.host?`<button data-t="${u.id}">Make host</button>`:''}</div>`).join('');
+ document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>send({type:'transfer',to:b.dataset.t}));
+ $('#pl').innerHTML=S.playlist.map((m,i)=>`<div class=row><span>${esc(m.title)} <small>by ${esc(m.by)}</small></span><button data-r="${i}">✕</button></div>`).join('')||'<small>Empty</small>';
+ document.querySelectorAll('[data-r]').forEach(b=>b.onclick=()=>send({type:'queueRemove',i:+b.dataset.r}));
+ const p=S.poll;$('#poll').innerHTML=p?`<b>${esc(p.q)}</b>`+p.opts.map((o,i)=>{const n=Object.values(p.votes).filter(x=>x==i).length;
+  return`<div class=row><button data-v="${i}" class="${p.votes[pid]==i?'p':''}">${esc(o)}</button><span>${n}</span></div>`}).join('')+(me?'<button id=pc>Close</button>':''):'<small>No active poll</small>';
+ document.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>send({type:'vote',i:+b.dataset.v}));if($('#pc'))$('#pc').onclick=()=>send({type:'pollClose'})}
+$('#ps').onclick=()=>{const o=$('#po').value.split(',').map(s=>s.trim()).filter(Boolean);if($('#pq').value&&o.length>1)send({type:'pollStart',q:$('#pq').value,opts:o})};
+$('#rx').innerHTML=['👍','😂','😮','❤️','🔥','👏'].map(e=>`<button class=chip data-e="${e}">${e}</button>`).join('');
+document.querySelectorAll('[data-e]').forEach(b=>b.onclick=()=>send({type:'react',emoji:b.dataset.e}));
+function onReact(m){const e=document.createElement('div');e.className='fl';e.textContent=m.emoji;e.style.left=10+Math.random()*80+'%';$('#fx').append(e);setTimeout(()=>e.remove(),2600)}
+const onChat=m=>{const c=$('#chat');c.insertAdjacentHTML('beforeend',`<div><b>${esc(m.name)}:</b> ${esc(m.text)}</div>`);c.scrollTop=1e9};
+const sendChat=()=>{if($('#ct').value.trim()){send({type:'chat',text:$('#ct').value});$('#ct').value=''}};$('#cs').onclick=sendChat;$('#ct').onkeydown=e=>e.key=='Enter'&&sendChat();
+$('#cp').onclick=()=>navigator.clipboard.writeText(location.href);
+function fz(q,s){q=q.toLowerCase();s=s.toLowerCase();let i=0,sc=0,l=-2;for(let j=0;j<s.length&&i<q.length;j++)if(s[j]===q[i]){sc+=l===j-1?3:1;l=j;i++}return i===q.length?sc:0}
+function drawList(){const cs=['All',...new Set(movies.map(m=>m.cat))];$('#cats').innerHTML=cs.map(c=>`<button class="chip ${c==cat?'on':''}" data-c="${c}">${c}</button>`).join('');
+ document.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>{cat=b.dataset.c;drawList()});
+ const q=$('#q').value;let r=movies.filter(m=>(cat=='All'||m.cat==cat)&&m.rating>=+$('#mr').value);
+ if(q)r=r.map(m=>[m,fz(q,m.title+' '+m.cat)]).filter(x=>x[1]).sort((a,b)=>b[1]-a[1]).map(x=>x[0]);else r.sort((a,b)=>b.rating-a.rating);
+ $('#list').innerHTML=r.map(m=>`<div class=row><span>${esc(m.title)} <small>${m.cat} · ★${m.rating} · ${m.year}</small></span><button data-p="${m.id}" class=p>▶</button><button data-a="${m.id}">＋</button></div>`).join('');
+ document.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>send({type:'load',movieId:b.dataset.p}));
+ document.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>send({type:'queueAdd',movieId:b.dataset.a}))}
+$('#q').oninput=drawList;$('#mr').onchange=drawList;
+</script>
